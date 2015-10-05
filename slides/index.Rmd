@@ -5,7 +5,7 @@ framework   : revealjs
 highlighter : highlight.js  # {highlight.js, prettify, highlight}
 hitheme     : default
 widgets     : [mathjax]           
-mode        : selfcontained
+mode        : standalone
 knit        : slidify::knit2slides
 ---
 <script src="http://ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
@@ -119,7 +119,7 @@ counts.saveAsTextFile("~/Documents/shakepseare-word-count")
 
 ## Collaborative filtering
 
-Say Alice likes  Batman and  Bob likes  Batman. If Alice also likes Birdman it is more probable that Bob to also likes Birdman than a randomly choosen user.
+Say Alice likes  Batman and  Bob likes  Batman. If Alice also likes Birdman it is more probable that Bob to also likes Birdman than a randomly chosen user.
 
 ---
 
@@ -146,6 +146,20 @@ Say Alice likes  Batman and  Bob likes  Batman. If Alice also likes Birdman it i
 <small>(Credits: [Apache Spark Tutorial](https://databricks-training.s3.amazonaws.com/movie-recommendation-with-mllib.html))</small>
 
 ---
+
+## Example application
+
+Source code only notebook with demo application:
+
+[https://github.com/alesk/spark-talk-2015](https://github.com/alesk/spark-talk-2015)
+
+Rendered notebook (cells with resulting output):
+
+[http://alesk.github.io/spark-talk-2015/movie-recommendation.pdf](http://alesk.github.io/spark-talk-2015/movie-recommendation.pdf)
+
+---
+
+--
 
 ## The next steps
 
