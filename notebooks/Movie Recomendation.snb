@@ -1,0 +1,414 @@
+{
+  "metadata" : {
+    "name" : "Movie Recomendation",
+    "user_save_timestamp" : "1970-01-01T01:00:00.000Z",
+    "auto_save_timestamp" : "1970-01-01T01:00:00.000Z",
+    "language_info" : {
+      "name" : "scala",
+      "file_extension" : "scala",
+      "codemirror_mode" : "text/x-scala"
+    },
+    "trusted" : true,
+    "customLocalRepo" : null,
+    "customRepos" : null,
+    "customDeps" : null,
+    "customImports" : null,
+    "customArgs" : null,
+    "customSparkConf" : null
+  },
+  "cells" : [ {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "# Movie recomendation engine\n\nRecomending movies using collaborative filtering. \n\nThe dataset is taken from [Movie Lense](http://grouplens.org/datasets/movielens/).\n"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "import java.nio.file.{Paths, Files}\nimport java.lang.Math\nimport org.apache.spark.rdd.RDD\nimport org.apache.spark.mllib.recommendation.ALS\n\n\nval numPartitions = 4 // equals # of cores for local processing\nval seed = 5\nval baseDir = \"/Users/ales/prj/education/talks/spark/data/\"\nval dataDir = \"ml-latest-small\" // change to the path to ml-latest to perfomr on the large datset\n\nval ratingsFilename = Paths.get(baseDir, dataDir, \"ratings.csv\")\nval moviesFilename = Paths.get(baseDir, dataDir, \"movies.csv\")\n\n// two data sources\nval rawRatings = sc.textFile(ratingsFilename.toString).repartition(numPartitions)\nval rawMovies = sc.textFile(moviesFilename.toString).repartition(numPartitions)\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "import java.nio.file.{Paths, Files}\nimport java.lang.Math\nimport org.apache.spark.rdd.RDD\nimport org.apache.spark.mllib.recommendation.ALS\nnumPartitions: Int = 4\nseed: Int = 5\nbaseDir: String = /Users/ales/prj/education/talks/spark/data/\ndataDir: String = ml-latest-small\nratingsFilename: java.nio.file.Path = /Users/ales/prj/education/talks/spark/data/ml-latest-small/ratings.csv\nmoviesFilename: java.nio.file.Path = /Users/ales/prj/education/talks/spark/data/ml-latest-small/movies.csv\nrawRatings: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[946] at repartition at <console>:74\nrawMovies: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[952] at repartition at <console>:75\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[952] at repartition at &lt;console&gt;:75"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 19
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "Each line in `rating.csv` is formatted as:\n\n```\nuserId,movieId,rating,timestamp\n```\n\nEach line in `movies.csv` is formatted as:\n\n```\nmovieId,\"title\",Genre1|Genre2|...\n```    "
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "import au.com.bytecode.opencsv.CSVParser\nimport org.apache.spark.mllib.recommendation.Rating\n\nval parser = new CSVParser(',')\n\nval ratingsRDD = rawRatings.filter(x => !x.startsWith(\"userId\"))  \n  .map(parser.parseLine)\n  .map {case Array(userId, movieId, rating, _) => Rating(userId.toInt, movieId.toInt, rating.toDouble)}\n\n\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "import au.com.bytecode.opencsv.CSVParser\nimport org.apache.spark.mllib.recommendation.Rating\nparser: au.com.bytecode.opencsv.CSVParser = au.com.bytecode.opencsv.CSVParser@6a3f4b1b\nratingsRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating] = MapPartitionsRDD[955] at map at <console>:71\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[955] at map at &lt;console&gt;:71"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 20
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "type Movie = (Int, String)\nval moviesRDD = rawMovies.filter(x => !x.startsWith(\"movieId\"))\n  .map(parser.parseLine)\n  .map {case Array(movieId, title, _) => (movieId.toInt, title)}",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "defined type alias Movie\nmoviesRDD: org.apache.spark.rdd.RDD[(Int, String)] = MapPartitionsRDD[958] at map at <console>:69\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[958] at map at &lt;console&gt;:69"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 21
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "markdown",
+    "source" : "## Number of Ratings and Average Ratings for a Movie\n\nList movies by average rating and number of ratings"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "// (userId, movieId, rating) => (movieId, rating) \nval movieIdsWithRatingsRDD = ratingsRDD\n  .map {case Rating(userId, movieId, rating) => (movieId, rating)}\n  .groupByKey()\n\n// calculate average rating and count of ratings\n// (movieId, ratings) => (movieId, (numberOfRatings, averageRating))\nval movieIdsWithAvgRatingsRDD = movieIdsWithRatingsRDD\n  .map {case (movieId, ratings) => (movieId, (ratings.size, ratings.sum / ratings.size))}\n  .cache()\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "movieIdsWithRatingsRDD: org.apache.spark.rdd.RDD[(Int, Iterable[Double])] = ShuffledRDD[960] at groupByKey at <console>:79\nmovieIdsWithAvgRatingsRDD: org.apache.spark.rdd.RDD[(Int, (Int, Double))] = MapPartitionsRDD[961] at map at <console>:84\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[961] at map at &lt;console&gt;:84"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 22
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "// (movieId, (title, (numberOfRatings, averageRating))) => (title, avearageRating, numberOfRatings)\nval movieNameWithAvgRatingsRDD = moviesRDD\n  .join(movieIdsWithAvgRatingsRDD)\n  .map {case (movieId, (title, (numberOfRatings, averageRating))) => (title, averageRating, numberOfRatings)}\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "movieNameWithAvgRatingsRDD: org.apache.spark.rdd.RDD[(String, Double, Int)] = MapPartitionsRDD[965] at map at <console>:75\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[965] at map at &lt;console&gt;:75"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 23
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "## Movies with Highest Average Ratings and more than 150 reviews"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "val movieLimitedAndSortedByRatingRDD = movieNameWithAvgRatingsRDD\n  .filter {case (title, mean, counts) => counts > 150}\n  .sortBy( {case (title, mean, counts) => mean + title}, false)\n\nmovieLimitedAndSortedByRatingRDD.take(20)",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "movieLimitedAndSortedByRatingRDD: org.apache.spark.rdd.RDD[(String, Double, Int)] = MapPartitionsRDD[971] at sortBy at <console>:90\nres4: Array[(String, Double, Int)] = Array((Shawshank Redemption, The (1994),4.4564516129032254,310), (Godfather, The (1972),4.451030927835052,194), (Usual Suspects, The (1995),4.41703056768559,229), (Schindler's List (1993),4.298283261802575,233), (Raiders of the Lost Ark (Indiana Jones and the Raiders of the Lost Ark) (1981),4.288372093023256,215), (Silence of the Lambs, The (1991),4.250836120401337,299), (Matrix, The (1999),4.238866396761134,247), (Fight Club (1999),4.217171717171717,198), (Pulp Fiction (1994),4.2042042042042045,333), (Lord of the Rings: The Return of the King, The (2003),4.191011235955056,178), (Monty Python and the Holy Grail (1975),4...."
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "<div class=\"container-fluid\"><div><div class=\"col-md-12\"><div>\n      <script data-this=\"{&quot;dataId&quot;:&quot;anon7ee032f69bd9a591f113e494fe2db5f4&quot;,&quot;dataInit&quot;:[{&quot;_1&quot;:&quot;Shawshank Redemption, The (1994)&quot;,&quot;_2&quot;:4.4564516129032254,&quot;_3&quot;:310},{&quot;_1&quot;:&quot;Godfather, The (1972)&quot;,&quot;_2&quot;:4.451030927835052,&quot;_3&quot;:194},{&quot;_1&quot;:&quot;Usual Suspects, The (1995)&quot;,&quot;_2&quot;:4.41703056768559,&quot;_3&quot;:229},{&quot;_1&quot;:&quot;Schindler's List (1993)&quot;,&quot;_2&quot;:4.298283261802575,&quot;_3&quot;:233},{&quot;_1&quot;:&quot;Raiders of the Lost Ark (Indiana Jones and the Raiders of the Lost Ark) (1981)&quot;,&quot;_2&quot;:4.288372093023256,&quot;_3&quot;:215},{&quot;_1&quot;:&quot;Silence of the Lambs, The (1991)&quot;,&quot;_2&quot;:4.250836120401337,&quot;_3&quot;:299},{&quot;_1&quot;:&quot;Matrix, The (1999)&quot;,&quot;_2&quot;:4.238866396761134,&quot;_3&quot;:247},{&quot;_1&quot;:&quot;Fight Club (1999)&quot;,&quot;_2&quot;:4.217171717171717,&quot;_3&quot;:198},{&quot;_1&quot;:&quot;Pulp Fiction (1994)&quot;,&quot;_2&quot;:4.2042042042042045,&quot;_3&quot;:333},{&quot;_1&quot;:&quot;Lord of the Rings: The Return of the King, The (2003)&quot;,&quot;_2&quot;:4.191011235955056,&quot;_3&quot;:178},{&quot;_1&quot;:&quot;Monty Python and the Holy Grail (1975)&quot;,&quot;_2&quot;:4.185185185185185,&quot;_3&quot;:162},{&quot;_1&quot;:&quot;Princess Bride, The (1987)&quot;,&quot;_2&quot;:4.173295454545454,&quot;_3&quot;:176},{&quot;_1&quot;:&quot;Saving Private Ryan (1998)&quot;,&quot;_2&quot;:4.162721893491124,&quot;_3&quot;:169},{&quot;_1&quot;:&quot;Sixth Sense, The (1999)&quot;,&quot;_2&quot;:4.152849740932642,&quot;_3&quot;:193},{&quot;_1&quot;:&quot;Alien (1979)&quot;,&quot;_2&quot;:4.149068322981367,&quot;_3&quot;:161},{&quot;_1&quot;:&quot;Seven (a.k.a. Se7en) (1995)&quot;,&quot;_2&quot;:4.145631067961165,&quot;_3&quot;:206},{&quot;_1&quot;:&quot;Fargo (1996)&quot;,&quot;_2&quot;:4.14390243902439,&quot;_3&quot;:205},{&quot;_1&quot;:&quot;Star Wars: Episode IV - A New Hope (1977)&quot;,&quot;_2&quot;:4.1415094339622645,&quot;_3&quot;:265},{&quot;_1&quot;:&quot;Star Wars: Episode V - The Empire Strikes Back (1980)&quot;,&quot;_2&quot;:4.1307339449541285,&quot;_3&quot;:218},{&quot;_1&quot;:&quot;Lord of the Rings: The Fellowship of the Ring, The (2001)&quot;,&quot;_2&quot;:4.116915422885572,&quot;_3&quot;:201}],&quot;genId&quot;:&quot;1088251307&quot;}\" type=\"text/x-scoped-javascript\">/*<![CDATA[*/req(['../javascripts/notebook/playground','../javascripts/notebook/magic/tableChart'], \n      function(playground, _magictableChart) {\n        // data ==> data-this (in observable.js's scopedEval) ==> this in JS => { dataId, dataInit, ... }\n        // this ==> scope (in observable.js's scopedEval) ==> this.parentElement ==> div.container below (toHtml)\n\n        playground.call(data,\n                        this\n                        ,\n                        {\n    \"f\": _magictableChart,\n    \"o\": {\"headers\":[\"_1\",\"_2\",\"_3\"],\"nrow\":20,\"shown\":20,\"width\":600,\"height\":400}\n  }\n  \n                        \n                        \n                      );\n      }\n    );/*]]>*/</script>\n    </div></div></div></div>"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 24
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "## Collaborative filtering"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "\nval Array(trainingRDD, validationRDD) = ratingsRDD.randomSplit(Array(7.0, 3.0), seed=seed)\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "trainingRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating] = MapPartitionsRDD[972] at randomSplit at <console>:71\nvalidationRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating] = MapPartitionsRDD[973] at randomSplit at <console>:71\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[973] at randomSplit at &lt;console&gt;:71"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 25
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "// Use Root Mean Square Error to assess quality of prediction\n\ndef computeRMSE(predictedRDD: RDD[Rating], actualRDD: RDD[Rating]): Double = {\n  def sqr(x: Double) = x * x\n  \n  val predictedKVRDD = predictedRDD.map(x =>((x.user, x.product), x.rating))\n  val actualKVRDD = actualRDD.map(x =>((x.user, x.product), x.rating))\n  \n  val squaredErrorsRDD = predictedKVRDD.join(actualKVRDD).map(x => sqr(x._2._1 - x._2._2))\n  val totalError = squaredErrorsRDD.sum()\n  val numRatings = squaredErrorsRDD.count()\n  Math.sqrt(totalError / numRatings)  \n}",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "computeRMSE: (predictedRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating], actualRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating])Double\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : ""
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 26
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "### Use ALS to build a model"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "import org.apache.spark.mllib.recommendation.ALS\nimport org.apache.spark.mllib.recommendation.Rating\nval validationForPredictRDD = validationRDD.map(x => (x.user, x.product))\nval ranks = List(4, 8, 12)\nval iterations = 10\nval regularizationParameter = 0.1\nval models =  ranks.map(rank => ALS.train(trainingRDD, rank, iterations, regularizationParameter, numPartitions, seed)) \n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "import org.apache.spark.mllib.recommendation.ALS\nimport org.apache.spark.mllib.recommendation.Rating\nvalidationForPredictRDD: org.apache.spark.rdd.RDD[(Int, Int)] = MapPartitionsRDD[974] at map at <console>:69\nranks: List[Int] = List(4, 8, 12)\niterations: Int = 10\nregularizationParameter: Double = 0.1\nmodels: List[org.apache.spark.mllib.recommendation.MatrixFactorizationModel] = List(org.apache.spark.mllib.recommendation.MatrixFactorizationModel@718b2b32, org.apache.spark.mllib.recommendation.MatrixFactorizationModel@767c11b8, org.apache.spark.mllib.recommendation.MatrixFactorizationModel@3a9e0b7b)\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "<div class=\"container-fluid\"><div><div class=\"col-md-12\"><div>\n      <script data-this=\"{&quot;dataId&quot;:&quot;anon984cfbb9290cb7dc038feed668fd5aa5&quot;,&quot;dataInit&quot;:[{&quot;rank&quot;:4,&quot;userFeatures&quot;:&quot;users MapPartitionsRDD[1180] at mapValues at ALS.scala:255&quot;,&quot;productFeatures&quot;:&quot;products MapPartitionsRDD[1181] at mapValues at ALS.scala:259&quot;,&quot;formatVersion&quot;:&quot;1.0&quot;},{&quot;rank&quot;:8,&quot;userFeatures&quot;:&quot;users MapPartitionsRDD[1387] at mapValues at ALS.scala:255&quot;,&quot;productFeatures&quot;:&quot;products MapPartitionsRDD[1388] at mapValues at ALS.scala:259&quot;,&quot;formatVersion&quot;:&quot;1.0&quot;},{&quot;rank&quot;:12,&quot;userFeatures&quot;:&quot;users MapPartitionsRDD[1594] at mapValues at ALS.scala:255&quot;,&quot;productFeatures&quot;:&quot;products MapPartitionsRDD[1595] at mapValues at ALS.scala:259&quot;,&quot;formatVersion&quot;:&quot;1.0&quot;}],&quot;genId&quot;:&quot;1056208541&quot;}\" type=\"text/x-scoped-javascript\">/*<![CDATA[*/req(['../javascripts/notebook/playground','../javascripts/notebook/magic/tableChart'], \n      function(playground, _magictableChart) {\n        // data ==> data-this (in observable.js's scopedEval) ==> this in JS => { dataId, dataInit, ... }\n        // this ==> scope (in observable.js's scopedEval) ==> this.parentElement ==> div.container below (toHtml)\n\n        playground.call(data,\n                        this\n                        ,\n                        {\n    \"f\": _magictableChart,\n    \"o\": {\"headers\":[\"rank\",\"userFeatures\",\"productFeatures\",\"formatVersion\"],\"nrow\":3,\"shown\":3,\"width\":600,\"height\":400}\n  }\n  \n                        \n                        \n                      );\n      }\n    );/*]]>*/</script>\n    </div></div></div></div>"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 27
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "val errors = models.map(model => computeRMSE(model.predict(validationForPredictRDD), validationRDD))\nval bestModelIndex = errors.zipWithIndex.minBy(_._1)._2",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "errors: List[Double] = List(0.905651597886979, 0.9048184592669741, 0.9101153782668934)\nbestModelIndex: Int = 1\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "1"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 28
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "### Build custom ratings set"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "// Filter used to search for movies by title\nmoviesRDD.filter {case (movieId, title) => title.toLowerCase.matches(\".*godfather.*\")}.take(20)\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "res5: Array[(Int, String)] = Array((858,Godfather, The (1972)), (1221,Godfather: Part II, The (1974)), (8607,Tokyo Godfathers (2003)), (2023,Godfather: Part III, The (1990)))\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "<div>\n      <script data-this=\"{&quot;dataId&quot;:&quot;anonb2e6b3a5d623f827456462bb1ff275d3&quot;,&quot;dataInit&quot;:[{&quot;_1&quot;:858,&quot;_2&quot;:&quot;Godfather, The (1972)&quot;},{&quot;_1&quot;:1221,&quot;_2&quot;:&quot;Godfather: Part II, The (1974)&quot;},{&quot;_1&quot;:8607,&quot;_2&quot;:&quot;Tokyo Godfathers (2003)&quot;},{&quot;_1&quot;:2023,&quot;_2&quot;:&quot;Godfather: Part III, The (1990)&quot;}],&quot;genId&quot;:&quot;2108873976&quot;}\" type=\"text/x-scoped-javascript\">/*<![CDATA[*/req(['../javascripts/notebook/playground','../javascripts/notebook/magic/tabs'], \n      function(playground, _magictabs) {\n        // data ==> data-this (in observable.js's scopedEval) ==> this in JS => { dataId, dataInit, ... }\n        // this ==> scope (in observable.js's scopedEval) ==> this.parentElement ==> div.container below (toHtml)\n\n        playground.call(data,\n                        this\n                        ,\n                        {\n    \"f\": _magictabs,\n    \"o\": {}\n  }\n  \n                        \n                        \n                      );\n      }\n    );/*]]>*/</script>\n    <div>\n        <ul class=\"nav nav-tabs\" id=\"ul2108873976\"><li>\n              <a href=\"#tab2108873976-0\"><i class=\"fa fa-table\"/></a>\n            </li></ul>\n\n        <div class=\"tab-content\" id=\"tab2108873976\"><div class=\"tab-pane\" id=\"tab2108873976-0\">\n            <div>\n      <script data-this=\"{&quot;dataId&quot;:&quot;anon081cd830dabe6eb1733038b4b273dc28&quot;,&quot;dataInit&quot;:[{&quot;_1&quot;:858,&quot;_2&quot;:&quot;Godfather, The (1972)&quot;},{&quot;_1&quot;:1221,&quot;_2&quot;:&quot;Godfather: Part II, The (1974)&quot;},{&quot;_1&quot;:8607,&quot;_2&quot;:&quot;Tokyo Godfathers (2003)&quot;},{&quot;_1&quot;:2023,&quot;_2&quot;:&quot;Godfather: Part III, The (1990)&quot;}],&quot;genId&quot;:&quot;1297258780&quot;}\" type=\"text/x-scoped-javascript\">/*<![CDATA[*/req(['../javascripts/notebook/playground','../javascripts/notebook/magic/tableChart'], \n      function(playground, _magictableChart) {\n        // data ==> data-this (in observable.js's scopedEval) ==> this in JS => { dataId, dataInit, ... }\n        // this ==> scope (in observable.js's scopedEval) ==> this.parentElement ==> div.container below (toHtml)\n\n        playground.call(data,\n                        this\n                        ,\n                        {\n    \"f\": _magictableChart,\n    \"o\": {\"headers\":[\"_1\",\"_2\"],\"nrow\":4,\"shown\":4,\"width\":600,\"height\":400}\n  }\n  \n                        \n                        \n                      );\n      }\n    );/*]]>*/</script>\n    </div>\n            </div></div>\n      </div></div>"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 29
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "val myRatedMovies = List(\n  Rating(0, 1186, 3.5), // Sex, Lies, and Videotape (1989)\n  Rating(0, 27005, 4), //Interview, The (1998)\n  Rating(0, 4369, 1), // Fast and the Furious, The (2001)\n  Rating(0, 1610, 4.3), //Hunt for Red October, The (1990)\n  Rating(0, 44555, 5), // Lives of Others, The (Das leben der Anderen) (2006)\n  Rating(0, 59725, 2), // Sex and the City (2008)\n  Rating(0, 5504, 1),// Spy Kids 2: The Island of Lost Dreams  \n  Rating(0, 3868, 2.5), // Naked Gun: From the Files of Police Squad!, The (1988)\n  Rating(0, 1385, 1), // Under Siege (1992)\n  Rating(0, 2383, 1.5), //Police Academy 6: City Under Siege (1989)\n  Rating(0, 86320, 4), // Melancholia (2011)\n  Rating(0, 7371, 4.7), // Dogville\n  Rating(0, 125916, 2), // Fifty Shades of Grey (2015)\n  Rating(0, 1101, 3.4), // Top Gun\n  Rating(0, 5065, 4.8), // Mothman Prophecies, The (2002)\n  Rating(0, 94469, 3), // Red Dog (2011)\n  Rating(0, 6539, 3), // Pirates of the Caribbean: The Curse of the Black Pearl (2003)\n  Rating(0, 593, 5), // Silence of the Lambs, The (1991)\n  Rating(0, 6711, 3.8),// Lost in Translation (2003)\n  Rating(0, 1287, 2.5), // Ben-Hur (1959)\n  Rating(0, 2022, 4), //Last Temptation of Christ, The (1988)\n  Rating(0, 1979, 1.5), //Friday the 13th Part VI: Jason Lives (1986)\n  Rating(0, 307, 4), // Three Colors: Blue (Trois couleurs: Bleu)\n  Rating(0, 64614, 4.2), // Gran Torino (2008)\n  Rating(0, 2700, 4.7), //South Park: Bigger, Longer and Uncut (1999)\n  Rating(0, 112552, 5), // Whiplash\n  Rating(0, 112183, 3.5), // The Birdman\n  Rating(0, 109374, 3.7), // Grand Budapest Hotel, The (2014)\n  Rating(0, 34437, 4.1), // Broken Flowers (2005)\n  Rating(0, 48997 , 3.9), //Perfume: The Story of a Murderer (2006)\n  Rating(0, 2467, 4.9), // Name of the Rose, The (Name der Rose, Der) (1986)\n  Rating(0, 1214, 3.8), // Alien\n  Rating(0, 924, 4.2), // 2001: A Space Odyssey (1968)\n  Rating(9, 858, 4.5) // Godfather, The (1972)\n  )",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "myRatedMovies: List[org.apache.spark.mllib.recommendation.Rating] = List(Rating(0,1186,3.5), Rating(0,27005,4.0), Rating(0,4369,1.0), Rating(0,1610,4.3), Rating(0,44555,5.0), Rating(0,59725,2.0), Rating(0,5504,1.0), Rating(0,3868,2.5), Rating(0,1385,1.0), Rating(0,2383,1.5), Rating(0,86320,4.0), Rating(0,7371,4.7), Rating(0,125916,2.0), Rating(0,1101,3.4), Rating(0,5065,4.8), Rating(0,94469,3.0), Rating(0,6539,3.0), Rating(0,593,5.0), Rating(0,6711,3.8), Rating(0,1287,2.5), Rating(0,2022,4.0), Rating(0,1979,1.5), Rating(0,307,4.0), Rating(0,64614,4.2), Rating(0,2700,4.7), Rating(0,112552,5.0), Rating(0,112183,3.5), Rating(0,109374,3.7), Rating(0,34437,4.1), Rating(0,48997,3.9), Rating(0,2467,4.9), Rating(0,1214,3.8), Rating(0,924,4.2), Rating(9,858,4.5))\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "<div class=\"container-fluid\"><div><div class=\"col-md-12\"><div>\n      <script data-this=\"{&quot;dataId&quot;:&quot;anon145f7c2185a1a9cbb43011cfefa29f76&quot;,&quot;dataInit&quot;:[{&quot;user&quot;:0,&quot;product&quot;:1186,&quot;rating&quot;:3.5},{&quot;user&quot;:0,&quot;product&quot;:27005,&quot;rating&quot;:4.0},{&quot;user&quot;:0,&quot;product&quot;:4369,&quot;rating&quot;:1.0},{&quot;user&quot;:0,&quot;product&quot;:1610,&quot;rating&quot;:4.3},{&quot;user&quot;:0,&quot;product&quot;:44555,&quot;rating&quot;:5.0},{&quot;user&quot;:0,&quot;product&quot;:59725,&quot;rating&quot;:2.0},{&quot;user&quot;:0,&quot;product&quot;:5504,&quot;rating&quot;:1.0},{&quot;user&quot;:0,&quot;product&quot;:3868,&quot;rating&quot;:2.5},{&quot;user&quot;:0,&quot;product&quot;:1385,&quot;rating&quot;:1.0},{&quot;user&quot;:0,&quot;product&quot;:2383,&quot;rating&quot;:1.5},{&quot;user&quot;:0,&quot;product&quot;:86320,&quot;rating&quot;:4.0},{&quot;user&quot;:0,&quot;product&quot;:7371,&quot;rating&quot;:4.7},{&quot;user&quot;:0,&quot;product&quot;:125916,&quot;rating&quot;:2.0},{&quot;user&quot;:0,&quot;product&quot;:1101,&quot;rating&quot;:3.4},{&quot;user&quot;:0,&quot;product&quot;:5065,&quot;rating&quot;:4.8},{&quot;user&quot;:0,&quot;product&quot;:94469,&quot;rating&quot;:3.0},{&quot;user&quot;:0,&quot;product&quot;:6539,&quot;rating&quot;:3.0},{&quot;user&quot;:0,&quot;product&quot;:593,&quot;rating&quot;:5.0},{&quot;user&quot;:0,&quot;product&quot;:6711,&quot;rating&quot;:3.8},{&quot;user&quot;:0,&quot;product&quot;:1287,&quot;rating&quot;:2.5},{&quot;user&quot;:0,&quot;product&quot;:2022,&quot;rating&quot;:4.0},{&quot;user&quot;:0,&quot;product&quot;:1979,&quot;rating&quot;:1.5},{&quot;user&quot;:0,&quot;product&quot;:307,&quot;rating&quot;:4.0},{&quot;user&quot;:0,&quot;product&quot;:64614,&quot;rating&quot;:4.2},{&quot;user&quot;:0,&quot;product&quot;:2700,&quot;rating&quot;:4.7}],&quot;genId&quot;:&quot;1505174639&quot;}\" type=\"text/x-scoped-javascript\">/*<![CDATA[*/req(['../javascripts/notebook/playground','../javascripts/notebook/magic/tableChart'], \n      function(playground, _magictableChart) {\n        // data ==> data-this (in observable.js's scopedEval) ==> this in JS => { dataId, dataInit, ... }\n        // this ==> scope (in observable.js's scopedEval) ==> this.parentElement ==> div.container below (toHtml)\n\n        playground.call(data,\n                        this\n                        ,\n                        {\n    \"f\": _magictableChart,\n    \"o\": {\"headers\":[\"user\",\"product\",\"rating\"],\"nrow\":34,\"shown\":25,\"width\":600,\"height\":400}\n  }\n  \n                        \n                        \n                      );\n      }\n    );/*]]>*/</script>\n    </div></div></div></div>"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 30
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "val myRatingsRDD = sc.parallelize(myRatedMovies)\nval trainingWithMyRatingsRDD = trainingRDD.union(myRatingsRDD)\nval myRatingsModel = ALS.train(trainingWithMyRatingsRDD, ranks(bestModelIndex), iterations, regularizationParameter)",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "myRatingsRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating] = ParallelCollectionRDD[1639] at parallelize at <console>:103\ntrainingWithMyRatingsRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating] = UnionRDD[1640] at union at <console>:104\nmyRatingsModel: org.apache.spark.mllib.recommendation.MatrixFactorizationModel = org.apache.spark.mllib.recommendation.MatrixFactorizationModel@208762d5\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "org.apache.spark.mllib.recommendation.MatrixFactorizationModel@208762d5"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 31
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "val myUserId = 0\nval myRatedMoviesIds = myRatedMovies.map {case Rating(_, movieId, _) => movieId}.toSet\n\n// remove all movies reated by me\nval myUnratedMoviesRDD = moviesRDD\n                          .filter {case (movieId, _) => !myRatedMoviesIds.contains(movieId)}\n                          .map {case (movieId, _) => (myUserId, movieId)}\n\n\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "myUserId: Int = 0\nmyRatedMoviesIds: scala.collection.immutable.Set[Int] = Set(1287, 924, 64614, 86320, 34437, 307, 59725, 112183, 593, 1214, 109374, 6539, 27005, 1979, 5065, 3868, 4369, 48997, 2383, 858, 112552, 2022, 7371, 2700, 1186, 5504, 6711, 1385, 1101, 94469, 44555, 1610, 125916, 2467)\nmyUnratedMoviesRDD: org.apache.spark.rdd.RDD[(Int, Int)] = MapPartitionsRDD[1849] at map at <console>:80\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[1849] at map at &lt;console&gt;:80"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 32
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "### Predicting my movies"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "val predictedRatingsRDD = myRatingsModel.predict(myUnratedMoviesRDD)\n\nval movieCountsRDD = movieIdsWithAvgRatingsRDD.map {case (movieId, (num, avg)) => (movieId, num)}\n\n\nval predictedRDD = predictedRatingsRDD.map(r => (r.product, r.rating))\nval predictedWithCountsRDD = predictedRDD.join(movieCountsRDD)\nval ratingsWithNamesRDD = predictedWithCountsRDD\n     .filter {case (movieId, (predictedRating, ratingNum)) => ratingNum > 75 }\n     .join(moviesRDD)\n     .map {case (movieId, ((predictedRating, ratingNum), movieName)) => (predictedRating, movieName, ratingNum) }",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "predictedRatingsRDD: org.apache.spark.rdd.RDD[org.apache.spark.mllib.recommendation.Rating] = MapPartitionsRDD[1857] at map at MatrixFactorizationModel.scala:132\nmovieCountsRDD: org.apache.spark.rdd.RDD[(Int, Int)] = MapPartitionsRDD[1858] at map at <console>:129\npredictedRDD: org.apache.spark.rdd.RDD[(Int, Double)] = MapPartitionsRDD[1859] at map at <console>:132\npredictedWithCountsRDD: org.apache.spark.rdd.RDD[(Int, (Double, Int))] = MapPartitionsRDD[1862] at join at <console>:133\nratingsWithNamesRDD: org.apache.spark.rdd.RDD[(Double, String, Int)] = MapPartitionsRDD[1867] at map at <console>:137\n"
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "MapPartitionsRDD[1867] at map at &lt;console&gt;:137"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 33
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "## Highest rated recommended movies "
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "ratingsWithNamesRDD.takeOrdered(20)(Ordering[Double].reverse.on(x => x._1))\n",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "res6: Array[(Double, String, Int)] = Array((4.646686181694027,Dogma (1999),77), (4.588085648044293,L.A. Confidential (1997),134), (4.489085927115561,Godfather: Part II, The (1974),128), (4.481775903413173,Amelie (Fabuleux destin d'Amélie Poulain, Le) (2001),116), (4.469010409506757,Kill Bill: Vol. 1 (2003),121), (4.447473772043459,Shining, The (1980),116), (4.421621839904943,Trainspotting (1996),122), (4.415867387141088,Fight Club (1999),198), (4.367996681055805,Seven (a.k.a. Se7en) (1995),206), (4.3592197328813835,Nightmare Before Christmas, The (1993),110), (4.334529216878715,Natural Born Killers (1994),91), (4.33101154924199,Léon: The Professional (a.k.a. The Professional) (Léon) (1994),117), (4.326836102570476,Eternal Sunshine of the Spotless Mind (2004),122), (4.30343472359595,Amer..."
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "<div class=\"container-fluid\"><div><div class=\"col-md-12\"><div>\n      <script data-this=\"{&quot;dataId&quot;:&quot;anonbd6d03750868d125606a4a14d8a5f1eb&quot;,&quot;dataInit&quot;:[{&quot;_1&quot;:4.646686181694027,&quot;_2&quot;:&quot;Dogma (1999)&quot;,&quot;_3&quot;:77},{&quot;_1&quot;:4.588085648044293,&quot;_2&quot;:&quot;L.A. Confidential (1997)&quot;,&quot;_3&quot;:134},{&quot;_1&quot;:4.489085927115561,&quot;_2&quot;:&quot;Godfather: Part II, The (1974)&quot;,&quot;_3&quot;:128},{&quot;_1&quot;:4.481775903413173,&quot;_2&quot;:&quot;Amelie (Fabuleux destin d'Amélie Poulain, Le) (2001)&quot;,&quot;_3&quot;:116},{&quot;_1&quot;:4.469010409506757,&quot;_2&quot;:&quot;Kill Bill: Vol. 1 (2003)&quot;,&quot;_3&quot;:121},{&quot;_1&quot;:4.447473772043459,&quot;_2&quot;:&quot;Shining, The (1980)&quot;,&quot;_3&quot;:116},{&quot;_1&quot;:4.421621839904943,&quot;_2&quot;:&quot;Trainspotting (1996)&quot;,&quot;_3&quot;:122},{&quot;_1&quot;:4.415867387141088,&quot;_2&quot;:&quot;Fight Club (1999)&quot;,&quot;_3&quot;:198},{&quot;_1&quot;:4.367996681055805,&quot;_2&quot;:&quot;Seven (a.k.a. Se7en) (1995)&quot;,&quot;_3&quot;:206},{&quot;_1&quot;:4.3592197328813835,&quot;_2&quot;:&quot;Nightmare Before Christmas, The (1993)&quot;,&quot;_3&quot;:110},{&quot;_1&quot;:4.334529216878715,&quot;_2&quot;:&quot;Natural Born Killers (1994)&quot;,&quot;_3&quot;:91},{&quot;_1&quot;:4.33101154924199,&quot;_2&quot;:&quot;Léon: The Professional (a.k.a. The Professional) (Léon) (1994)&quot;,&quot;_3&quot;:117},{&quot;_1&quot;:4.326836102570476,&quot;_2&quot;:&quot;Eternal Sunshine of the Spotless Mind (2004)&quot;,&quot;_3&quot;:122},{&quot;_1&quot;:4.30343472359595,&quot;_2&quot;:&quot;American Beauty (1999)&quot;,&quot;_3&quot;:221},{&quot;_1&quot;:4.276345254160734,&quot;_2&quot;:&quot;Memento (2000)&quot;,&quot;_3&quot;:146},{&quot;_1&quot;:4.259012850177962,&quot;_2&quot;:&quot;Dr. Strangelove or: How I Learned to Stop Worrying and Love the Bomb (1964)&quot;,&quot;_3&quot;:138},{&quot;_1&quot;:4.239690364959307,&quot;_2&quot;:&quot;Good, the Bad and the Ugly, The (Buono, il brutto, il cattivo, Il) (1966)&quot;,&quot;_3&quot;:81},{&quot;_1&quot;:4.238264064128547,&quot;_2&quot;:&quot;Pulp Fiction (1994)&quot;,&quot;_3&quot;:333},{&quot;_1&quot;:4.2379402457463184,&quot;_2&quot;:&quot;Donnie Darko (2001)&quot;,&quot;_3&quot;:89},{&quot;_1&quot;:4.222075715403124,&quot;_2&quot;:&quot;Truman Show, The (1998)&quot;,&quot;_3&quot;:134}],&quot;genId&quot;:&quot;1826675140&quot;}\" type=\"text/x-scoped-javascript\">/*<![CDATA[*/req(['../javascripts/notebook/playground','../javascripts/notebook/magic/tableChart'], \n      function(playground, _magictableChart) {\n        // data ==> data-this (in observable.js's scopedEval) ==> this in JS => { dataId, dataInit, ... }\n        // this ==> scope (in observable.js's scopedEval) ==> this.parentElement ==> div.container below (toHtml)\n\n        playground.call(data,\n                        this\n                        ,\n                        {\n    \"f\": _magictableChart,\n    \"o\": {\"headers\":[\"_1\",\"_2\",\"_3\"],\"nrow\":20,\"shown\":20,\"width\":600,\"height\":400}\n  }\n  \n                        \n                        \n                      );\n      }\n    );/*]]>*/</script>\n    </div></div></div></div>"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 34
+    } ]
+  }, {
+    "metadata" : { },
+    "cell_type" : "markdown",
+    "source" : "## Lowes rated recommended movies"
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : false
+    },
+    "cell_type" : "code",
+    "source" : "val predictedLowestRatedMovies = ratingsWithNamesRDD.takeOrdered(20)(Ordering[Double].on(x => x._1))",
+    "outputs" : [ {
+      "name" : "stdout",
+      "output_type" : "stream",
+      "text" : "predictedLowestRatedMovies: Array[(Double, String, Int)] = Array((1.8129077187089342,Congo (1995),76), (2.1800512028951786,Home Alone (1990),148), (2.1899143625896214,Net, The (1995),102), (2.2145891713538957,Eraser (1996),84), (2.257319270336734,Grease (1978),78), (2.3502728760009255,Mrs. Doubtfire (1993),162), (2.36658667752073,Santa Clause, The (1994),85), (2.379591881860865,Beauty and the Beast (1991),182), (2.4242951045938232,Enemy of the State (1998),77), (2.4558848809047276,Cliffhanger (1993),121), (2.4648077505289825,Batman Forever (1995),164), (2.4753765135930212,Dumb & Dumber (Dumb and Dumber) (1994),151), (2.4870661509017906,Jurassic Park (1993),307), (2.4992999357152783,Ghost (1990),143), (2.5078141002369225,Clueless (1995),135), (2.5107460220712454,Independence Day (a.k.a. ..."
+    }, {
+      "metadata" : { },
+      "data" : {
+        "text/html" : "<div class=\"container-fluid\"><div><div class=\"col-md-12\"><div>\n      <script data-this=\"{&quot;dataId&quot;:&quot;anonbfebb3de3c4c197d94bf079390eeb5cb&quot;,&quot;dataInit&quot;:[{&quot;_1&quot;:1.8129077187089342,&quot;_2&quot;:&quot;Congo (1995)&quot;,&quot;_3&quot;:76},{&quot;_1&quot;:2.1800512028951786,&quot;_2&quot;:&quot;Home Alone (1990)&quot;,&quot;_3&quot;:148},{&quot;_1&quot;:2.1899143625896214,&quot;_2&quot;:&quot;Net, The (1995)&quot;,&quot;_3&quot;:102},{&quot;_1&quot;:2.2145891713538957,&quot;_2&quot;:&quot;Eraser (1996)&quot;,&quot;_3&quot;:84},{&quot;_1&quot;:2.257319270336734,&quot;_2&quot;:&quot;Grease (1978)&quot;,&quot;_3&quot;:78},{&quot;_1&quot;:2.3502728760009255,&quot;_2&quot;:&quot;Mrs. Doubtfire (1993)&quot;,&quot;_3&quot;:162},{&quot;_1&quot;:2.36658667752073,&quot;_2&quot;:&quot;Santa Clause, The (1994)&quot;,&quot;_3&quot;:85},{&quot;_1&quot;:2.379591881860865,&quot;_2&quot;:&quot;Beauty and the Beast (1991)&quot;,&quot;_3&quot;:182},{&quot;_1&quot;:2.4242951045938232,&quot;_2&quot;:&quot;Enemy of the State (1998)&quot;,&quot;_3&quot;:77},{&quot;_1&quot;:2.4558848809047276,&quot;_2&quot;:&quot;Cliffhanger (1993)&quot;,&quot;_3&quot;:121},{&quot;_1&quot;:2.4648077505289825,&quot;_2&quot;:&quot;Batman Forever (1995)&quot;,&quot;_3&quot;:164},{&quot;_1&quot;:2.4753765135930212,&quot;_2&quot;:&quot;Dumb &amp; Dumber (Dumb and Dumber) (1994)&quot;,&quot;_3&quot;:151},{&quot;_1&quot;:2.4870661509017906,&quot;_2&quot;:&quot;Jurassic Park (1993)&quot;,&quot;_3&quot;:307},{&quot;_1&quot;:2.4992999357152783,&quot;_2&quot;:&quot;Ghost (1990)&quot;,&quot;_3&quot;:143},{&quot;_1&quot;:2.5078141002369225,&quot;_2&quot;:&quot;Clueless (1995)&quot;,&quot;_3&quot;:135},{&quot;_1&quot;:2.5107460220712454,&quot;_2&quot;:&quot;Independence Day (a.k.a. ID4) (1996)&quot;,&quot;_3&quot;:230},{&quot;_1&quot;:2.5173958287036178,&quot;_2&quot;:&quot;Speed (1994)&quot;,&quot;_3&quot;:201},{&quot;_1&quot;:2.518512520522281,&quot;_2&quot;:&quot;American Pie (1999)&quot;,&quot;_3&quot;:123},{&quot;_1&quot;:2.581305172789377,&quot;_2&quot;:&quot;Pretty Woman (1990)&quot;,&quot;_3&quot;:175},{&quot;_1&quot;:2.581713890585123,&quot;_2&quot;:&quot;Charlie's Angels (2000)&quot;,&quot;_3&quot;:82}],&quot;genId&quot;:&quot;827125311&quot;}\" type=\"text/x-scoped-javascript\">/*<![CDATA[*/req(['../javascripts/notebook/playground','../javascripts/notebook/magic/tableChart'], \n      function(playground, _magictableChart) {\n        // data ==> data-this (in observable.js's scopedEval) ==> this in JS => { dataId, dataInit, ... }\n        // this ==> scope (in observable.js's scopedEval) ==> this.parentElement ==> div.container below (toHtml)\n\n        playground.call(data,\n                        this\n                        ,\n                        {\n    \"f\": _magictableChart,\n    \"o\": {\"headers\":[\"_1\",\"_2\",\"_3\"],\"nrow\":20,\"shown\":20,\"width\":600,\"height\":400}\n  }\n  \n                        \n                        \n                      );\n      }\n    );/*]]>*/</script>\n    </div></div></div></div>"
+      },
+      "output_type" : "execute_result",
+      "execution_count" : 35
+    } ]
+  }, {
+    "metadata" : {
+      "trusted" : true,
+      "input_collapsed" : false,
+      "collapsed" : true
+    },
+    "cell_type" : "code",
+    "source" : "",
+    "outputs" : [ ]
+  } ],
+  "nbformat" : 4
+}
